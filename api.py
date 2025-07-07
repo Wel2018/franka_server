@@ -7,9 +7,10 @@ from fastapi import WebSocket
 # from fastapi import File, UploadFile
 # from fastapi.responses import JSONResponse, StreamingResponse
 # from dataclasses import asdict, dataclass, field
-# from attrs import asdict, define, field
+from attrs import asdict, define, field
 # from loguru import logger
 router = APIRouter()
+from config import AppConfig
 
 
 from franky_wrapper import FrankaController
@@ -27,22 +28,40 @@ def create_reply(data: dict = {}, is_ok=1):
     return metadata
 
 
-import yaml
-fk_cfg = FrankaControllerConfig
-cfg = yaml.safe_load(open("appcfg.yaml", "r"))
-print(cfg)
-arm_id = cfg['arm_id']
-ip = fk_cfg.ARM_IP3 if arm_id == 3 else fk_cfg.ARM_IP2
+class Controller:
+    arm: FrankaController = None # type: ignore
 
-print(f"arm_id: {arm_id}")
-print(f"arm_ip: {ip}")
 
-arm = FrankaController(ip)
+def create_arm():
+    """创建机械臂实例
+    - 使用延迟加载，前台根据 arm_id 获取机械臂设备序号
+    """
+    fk_cfg = FrankaControllerConfig
+    print(f"cfg={AppConfig.args}")
+    arm_id = AppConfig.args['arm_id']
+
+    if arm_id == "2":
+        ip = fk_cfg.ARM_IP2
+    elif arm_id == "3":
+        ip = fk_cfg.ARM_IP3
+    else:
+        raise ValueError(f"不支持设备 {AppConfig.args}")
+
+    print(f"arm_id: {arm_id}")
+    print(f"arm_ip: {ip}")
+    arm = FrankaController(ip)
+    Controller.arm = arm
+
+
+@router.get("/recover", summary="从错误中恢复")
+def recover():
+    Controller.arm.recover()
+    return create_reply()
 
 
 @router.get("/goto_init_pos", summary="到达初始位置")
 def goto_init_pos():
-    arm.goto_init_pos()
+    Controller.arm.goto_init_pos()
     return create_reply()
 
 
@@ -62,6 +81,7 @@ def get_curr():
     3. joint: 当前关节角度
     4. elbow: 当前肘部角度
     """
+    arm = Controller.arm
     state = arm.get_curr()
     return create_reply(state)
 
@@ -71,6 +91,7 @@ async def get_curr_ws(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
+            arm = Controller.arm
             state = arm.get_curr()
             await websocket.send_text(json.dumps(state))
             # print(time.time(), state)
@@ -114,6 +135,7 @@ def cartesian_velocity_control(data: dict):
     is_async = data.get("is_async", 0)
 
     print(f"{time.time()} cartesian_velocity_control {data}")
+    arm = Controller.arm
     arm.cartesian_velocity_control(x,y,z,R,P,Y, duration, is_async)
 
     return create_reply()
@@ -133,7 +155,7 @@ def joint_velocity_control(data: dict):
     vel_lst = data.get("vel_lst", [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05])
     duration = data.get("duration", 1000*60)
     is_async = data.get("is_async", 0)
-
+    arm = Controller.arm
     arm.joint_velocity_control(vel_lst, duration, is_async)
 
     return create_reply()
@@ -141,6 +163,7 @@ def joint_velocity_control(data: dict):
 
 @router.get("/stop_cartesian_velocity_control", summary="停止坐标空间速度控制")
 def stop_cartesian_velocity_control():
+    arm = Controller.arm
     arm.stop_cartesian_velocity_control()
     print(f"{time.time()} stop_cartesian_velocity_control")
     return create_reply()
@@ -148,6 +171,7 @@ def stop_cartesian_velocity_control():
 
 @router.get("/stop_joint_velocity_control", summary="停止关节空间速度控制")
 def stop_joint_velocity_control():
+    arm = Controller.arm
     arm.stop_joint_velocity_control()
     return create_reply()
 
@@ -179,6 +203,7 @@ def cartesian_position_control(data: dict):
     Y = data.get("Y", 0)
     mode = data.get("mode", "relative")
     is_async = data.get("is_async", 0)
+    arm = Controller.arm
     arm.cartesian_position_control(x,y,z,R,P,Y,is_async, mode)
     return create_reply()
 
@@ -198,18 +223,21 @@ def joint_position_control(data: dict):
     joints_lst = data.get("joints_lst", [-0.3, 0.1, 0.3, -1.4, 0.1, 1.8, 0.7])
     mode = data.get("mode", "relative")
     is_async = data.get("is_async", 0)
+    arm = Controller.arm
     arm.joint_position_control(joints_lst, is_async, mode)
     return create_reply()
 
 
 @router.get("/stop_cartesian_position_control", summary="停止坐标空间路径规划")
 def stop_cartesian_position_control():
+    arm = Controller.arm
     arm.stop_cartesian_position_control()
     return create_reply()
 
 
 @router.get("/stop_joint_position_control", summary="停止关节空间路径规划")
 def stop_joint_position_control():
+    arm = Controller.arm
     arm.stop_joint_position_control()
     return create_reply()
 
@@ -228,6 +256,7 @@ def gripper_control(data: dict):
     mode: move, grasp, release, wait
     ```
     """
+    arm = Controller.arm
     force = data.get("force", 50)
     speed = data.get("speed", 0.1)
     width = data.get("width", 0.05)
@@ -240,9 +269,9 @@ def gripper_control(data: dict):
     if mode == "move":
         success = arm.gripper_move(width, is_async)
     elif mode == "grasp":
-        success = arm.gripper_grasp(width)
+        success = arm.gripper_grasp(width, is_async)
     elif mode == "release":
-        arm.gripper_release()
+        arm.gripper_release(is_async)
         success = 1
     elif mode == "wait":
         arm.gripper_wait()
@@ -251,3 +280,10 @@ def gripper_control(data: dict):
         success = 0
     return create_reply(is_ok=1)
 
+
+@router.post("/join", summary="等待异步动作完成")
+def join(data: dict):
+    arm = Controller.arm
+    timeout = data.get('timeout', 1000)
+    is_ok = arm.join(timeout)
+    return create_reply(is_ok=is_ok)
