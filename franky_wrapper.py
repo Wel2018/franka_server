@@ -47,16 +47,18 @@ class FrankaController:
 
         # 默认单位，m，ms
         self.max_time = 60*1000 # 60s
-        self.goto_init_pos()
 
         # 夹爪控制
         self.gripper = franky.Gripper(ip)
         self.gripper_success_future = None
         self.gripper_speed = 0.1
-        self.gripper_force = 50
+        self.gripper_force = 30
         self.gripper_epsilon_outer = 1.0
+        self.gripper_epsilon_inner = 1.0
         # self.gripper_is_open = True
+        # 先释放夹爪再回原位
         self.gripper_release()
+        self.goto_init_pos()
 
         self.stop_async = bool(1)
         self.gripper_async = bool(0)
@@ -89,16 +91,21 @@ class FrankaController:
             print("Gripper motion timed out.")
 
     def gripper_grasp(self, width=0.0, is_async=0):
-        """带力控抓取一个未知大小的物体，力度默认为 20 [N]"""
-        speed = self.gripper_speed
-        force = self.gripper_force
-        epsilon_outer = self.gripper_epsilon_outer
-        # success = self.gripper.move(1.00, speed)
+        """带力控抓取一个未知大小的物体，力度默认为 30 [N]"""
+        _func = self.gripper.grasp
         if is_async:
-            success = self.gripper.grasp_async(width, speed, force, epsilon_outer=epsilon_outer)
-            return success
-        else:
-            return self.gripper.grasp(width, speed, force, epsilon_outer=epsilon_outer)
+            _func = self.gripper.grasp_async
+        
+        print(f"gripper_grasp width={width} speed={self.gripper_speed} force={self.gripper_force}")
+        ret = _func(
+            width, 
+            self.gripper_speed,
+            self.gripper_force,
+            epsilon_outer=self.gripper_epsilon_outer, 
+            epsilon_inner=self.gripper_epsilon_inner
+        )
+        return ret
+
 
     def gripper_release(self, is_async=0):
         """抓取物品后释放出来，返回物体的宽度"""
@@ -111,14 +118,14 @@ class FrankaController:
             self.gripper.open(self.gripper_speed)
             return width
 
-    def goto_init_pos(self):
+    def goto_init_pos(self, is_async=0):
         """到达初始位置 Go to initial position"""
         # bug: 松开 G 按钮时会导致调用 stop_action，该过程中可能还没有到达初始位置
-        print("等待之前的动作执行完毕")
+        # print("等待之前的动作执行完毕")
         # franky._franky.InvalidMotionTypeException: 
         # The type of motion cannot change during runtime. 
         # Please ensure that the previous motion finished before using a new type of motion.
-        self.robot.join_motion(1000.0)
+        # self.robot.join_motion(1.0)
         # j = [0.0, 0.0, 0.0, -2.2, 0.0, 2.2, 0.7] # 不太正，手动拖拽
         # j = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]  # ros 中的默认位置，高度太高
         # 向下移动一定距离
@@ -132,13 +139,13 @@ class FrankaController:
             0.7852192427292545
           ]
         
-        print("回归零位")
+        # print("回归零位")
         # factor = RelativeDynamicsFactor(
         #     velocity=0.08, acceleration=0.08, jerk=0.08)
-        reftype = ReferenceType.Absolute
+        reftype = ReferenceType.Absolute # type: ignore
         self.robot.move(
             JointMotion(j, reftype, 1.0), 
-            asynchronous=bool(0))
+            asynchronous=bool(is_async))
 
 
     def config(self):
@@ -260,7 +267,7 @@ class FrankaController:
         motion = JointVelocityMotion(vel_lst, duration=Duration(duration)) # type: ignore
         self.robot.move(motion, asynchronous=bool(is_async))
 
-    def join(self, timeout=1000):
+    def join(self, timeout=3):
         """等待动作完成"""
         return self.robot.join_motion(timeout)
 
@@ -323,6 +330,9 @@ class FrankaController:
         print("释放机械臂")
         self.robot.stop()
 
+    def stop(self):
+        self.robot.stop()
+
 
 if __name__ == "__main__":
     fc = FrankaController(FrankaControllerConfig.ARM_IP2)
@@ -333,4 +343,3 @@ if __name__ == "__main__":
     # res = fc.gripper_move(0.0, speed=0.2)
     # res = fc.gripper_move(1.0, speed=0.2)
     print(res)
-

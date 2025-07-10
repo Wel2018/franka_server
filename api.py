@@ -61,7 +61,10 @@ def recover():
 
 @router.get("/goto_init_pos", summary="到达初始位置")
 def goto_init_pos():
-    Controller.arm.goto_init_pos()
+    try:
+        Controller.arm.goto_init_pos(0)
+    except Exception as e:
+        print(f"[goto_init_pos] e={e}")
     return create_reply()
 
 
@@ -257,7 +260,7 @@ def gripper_control(data: dict):
     ```
     """
     arm = Controller.arm
-    force = data.get("force", 50)
+    force = data.get("force", 30)
     speed = data.get("speed", 0.1)
     width = data.get("width", 0.05)
     is_async = data.get("is_async", 0)
@@ -269,7 +272,7 @@ def gripper_control(data: dict):
     if mode == "move":
         success = arm.gripper_move(width, is_async)
     elif mode == "grasp":
-        success = arm.gripper_grasp(width, is_async)
+        success = arm.gripper_grasp(0, is_async)
     elif mode == "release":
         arm.gripper_release(is_async)
         success = 1
@@ -287,3 +290,10 @@ def join(data: dict):
     timeout = data.get('timeout', 1000)
     is_ok = arm.join(timeout)
     return create_reply(is_ok=is_ok)
+
+
+@router.get("/stop", summary="停止")
+def stop():
+    arm = Controller.arm
+    arm.stop()
+    return create_reply(is_ok=1)
